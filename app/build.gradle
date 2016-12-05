@@ -10,6 +10,8 @@ android {
         targetSdkVersion 21
 		versionCode 5
 		versionName "1.4"
+
+        testInstrumentationRunner "android.support.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
@@ -22,8 +24,26 @@ android {
 		sourceCompatibility JavaVersion.VERSION_1_7
 		targetCompatibility JavaVersion.VERSION_1_7
 	}
+
+    sourceSets{
+        main {
+            java.excludes = ['androidTest/**', 'test/**']
+        }
+        androidTest.setRoot('src/androidTest/')
+//        marshmallow.manifest.srcFile 'AndroidManifest-Marshmallow.xml'
+        instrumentTest.setRoot('tests')
+    }
+
+}
+
+configurations.all {
+    resolutionStrategy.force 'com.android.support:support-annotations:23+'
 }
 
 dependencies {
+    testCompile 'junit:junit:4.12'
+    androidTestCompile 'com.android.support:support-annotations:23+'
+    androidTestCompile 'com.android.support.test:runner:0.5'
+    androidTestCompile 'com.android.support.test:rules:0.5'
 	compile 'com.android.support:support-v4:23.2.0'
 }
