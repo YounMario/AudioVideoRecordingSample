@@ -1,20 +1,21 @@
 package com.younchen;
 
 import android.media.AudioFormat;
-import android.media.AudioRecord;
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
 import android.media.MediaMuxer;
 import android.util.Log;
 
-import com.serenegiant.encoder.MediaMuxerWrapper;
-import com.younchen.audio.AudioRecordThread;
+import junit.framework.Assert;
 
 import org.junit.Test;
 
+import java.io.File;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.util.concurrent.CountDownLatch;
 
 /**
  * Created by 龙泉 on 2016/12/5.
@@ -57,13 +58,32 @@ public class AudioEncoderTest {
 
     boolean DEBUG = true;
 
+    CountDownLatch latch = new CountDownLatch(1);
+    private boolean mMuxerStarted;
+    private boolean mMuxerIsRunning;
+
+    private String mOutputPath = "/sdcard/youn.mp3";
+    private String mInputPath = "/sdcard/rock.mp3";
+
+    private File inputFile;
+    private File outputFile;
 
     @Test
-    public void testAudioEncoding() throws IOException {
+    public void testAudioEncoding() throws IOException, InterruptedException {
+
+        initInputFile();
         //create Codec
         initMediaCodec();
         //
+        initMuxer();
         startRecord();
+        latch.await();
+    }
+
+    private void initInputFile() {
+        inputFile = new File(mInputPath);
+        outputFile = new File(mOutputPath);
+        Assert.assertEquals(true, inputFile.exists());
     }
 
     private void startRecord() {
@@ -75,6 +95,15 @@ public class AudioEncoderTest {
         audioSourceReadThread.start();
     }
 
+    private void initMuxer() throws IOException {
+        muxer = new MediaMuxer(mOutputPath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
+    }
+
+    private void stopRecording(){
+        mIsRecording = false;
+        mRequestStop = true;
+    }
+
     private void initMediaCodec() throws IOException {
         final MediaFormat audioFormat = MediaFormat.createAudioFormat(MIME_TYPE, SAMPLE_RATE, 1);
         audioFormat.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC);
@@ -82,7 +111,7 @@ public class AudioEncoderTest {
         audioFormat.setInteger(MediaFormat.KEY_BIT_RATE, BIT_RATE);
         audioFormat.setInteger(MediaFormat.KEY_CHANNEL_COUNT, 1);
 //		audioFormat.setLong(MediaFormat.KEY_MAX_INPUT_SIZE, inputFile.length());
-//      audioFormat.setLong(MediaFormat.KEY_DURATION, (long)durationInMs );
+//        audioFormat.setLong(MediaFormat.KEY_DURATION, (long)durationInMs );
         mMediaCodec = MediaCodec.createEncoderByType(MIME_TYPE);
         mMediaCodec.configure(audioFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
         mMediaCodec.start();
@@ -142,6 +171,7 @@ public class AudioEncoderTest {
             while (isRunning) {
 
                 synchronized (lock) {
+                    System.out.println("loop remaind drain:" + needDrain);
                     localRequestStop = mRequestStop;
                     localRequestDrain = needDrain > 0;
                     if (localRequestDrain) {
@@ -150,17 +180,21 @@ public class AudioEncoderTest {
                 }
                 if (localRequestStop) {
                     //
+                    System.out.println("-------end drain");
                     drain();
                     //write eof
                     writeEof();
                     //
                     drain();
+                    System.out.println("-------end drain");
                 }
                 if (localRequestDrain) {
                     drain();
                 } else {
                     try {
-                        lock.wait();
+                        synchronized (lock){
+                            lock.wait();
+                        }
                     } catch (InterruptedException e) {
                         e.printStackTrace();
                     }
@@ -170,7 +204,8 @@ public class AudioEncoderTest {
     }
 
     private void writeEof() {
-        encode(null, 0, getPTSUs());
+//        encode(null, 0, getPTSUs());
+        System.out.println("write eof");
     }
 
     private class AudioSourceReadThread extends Thread {
@@ -184,28 +219,42 @@ public class AudioEncoderTest {
 
                     final ByteBuffer buf = ByteBuffer.allocateDirect(SAMPLES_PER_FRAME);
                     int readBytes;
-                    audioRecord.startRecording();
+//                    audioRecord.startRecording();
+                    FileInputStream in = new FileInputStream(inputFile);
+                    byte[] readData = new byte[SAMPLES_PER_FRAME];
+                    int readCount =0 ;
                     try {
-                        for (; mIsRecording && !mRequestStop && !mIsEOS; ) {
-                            // read audio data from internal mic
+                        while ((readCount = in.read(readData)) != -1 && mIsRecording && !mIsEOS) {
                             buf.clear();
-                            readBytes = audioRecord.read(buf, SAMPLES_PER_FRAME);
-                            if (readBytes > 0) {
+                            buf.put(readData, 0, readCount);
+                            if (readCount > 0) {
                                 // set audio data to encoder
-                                buf.position(readBytes);
+                                buf.position(readCount);
                                 buf.flip();
-                                encode(buf, readBytes, getPTSUs());
+                                encode(buf, readCount, getPTSUs());
                                 frameAvailableSoon();
                             }
                         }
                         frameAvailableSoon();
+
+//
+//                        for (; mIsRecording && !mRequestStop && !mIsEOS; ) {
+//                            // read audio data from internal mic
+//                            buf.clear();
+//                            buf.put(read,0,readCount);
+//                            readBytes = audioRecord.read(buf, SAMPLES_PER_FRAME);
+//                            if (readBytes > 0) {
+//
+//                            }
+//                        }
+
                     } finally {
-                        //  audioRecord.stop();
+                        stopRecording();
                     }
                 }
             } catch (Exception ex) {
             } finally {
-                //  audioRecord.release();
+                mIsRecording = false;
             }
         }
     }
@@ -221,10 +270,16 @@ public class AudioEncoderTest {
     }
 
     private long getPTSUs() {
-        return 0;
+        long result = System.nanoTime() / 1000L;
+        // presentationTimeUs should be monotonic
+        // otherwise muxer fail to write
+        if (result < prevOutputPTSUs)
+            result = (prevOutputPTSUs - result) + result;
+        return result;
     }
 
     protected void drain() {
+        System.out.println("drain");
         if (mMediaCodec == null) return;
         ByteBuffer[] encoderOutputBuffers = mMediaCodec.getOutputBuffers();
         int encoderStatus, count = 0;
@@ -260,10 +315,10 @@ public class AudioEncoderTest {
                 final MediaFormat format = mMediaCodec.getOutputFormat(); // API >= 16
                 mTrackIndex = muxer.addTrack(format);
                 mMuxerStarted = true;
-                if (!muxer.start()) {
+                if (!startMuxer()) {
                     // we should wait until muxer is ready
                     synchronized (muxer) {
-                        while (!muxer.isStarted())
+                        while (!mMuxerIsRunning)
                             try {
                                 muxer.wait(100);
                             } catch (final InterruptedException e) {
@@ -310,6 +365,12 @@ public class AudioEncoderTest {
                 }
             }
         }
+    }
+
+    private boolean startMuxer() {
+        mMuxerIsRunning = true;
+        muxer.notifyAll();
+        return mMuxerIsRunning;
     }
 
 }
